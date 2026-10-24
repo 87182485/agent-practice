@@ -1,0 +1,18 @@
+# virtualenv
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# SQLite database — generated at runtime, never commit it
+*.db
+
+# secrets (milestone 3+)
+.env
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store

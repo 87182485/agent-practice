@@ -1,0 +1,6 @@
+# Dev/test-only dependencies — like devDependencies in package.json.
+# Install with:  pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+pytest
+httpx2      # what Starlette 1.x's TestClient uses (falls back to httpx with a warning)
+httpx       # used by seed.py
