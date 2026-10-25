@@ -54,6 +54,14 @@ def _summarize(b: dict) -> dict:
     return {"id": b["id"], "title": b["title"], "url": b["url"],
             "tags": [t["name"] for t in b.get("tags", [])]}
 
+def _require_id(bookmark_id) -> int:
+    try:
+        return int(bookmark_id)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"bookmark_id must be a number from list_bookmarks, got {bookmark_id!r}. "
+            "To find a bookmark by name, call list_bookmarks with query set to a word from its title."
+        )
 
 # ---- Read tools ----------------------------------------------------------------
 
@@ -83,7 +91,7 @@ def get_bookmark(bookmark_id: int) -> str:
     Returns:
         JSON with the bookmark's id, title, url, tags and note.
     """
-    b = _request("GET", f"/bookmarks/{int(bookmark_id)}")
+    b = _request("GET", f"/bookmarks/{_require_id(bookmark_id)}")
     return json.dumps({**_summarize(b), "note": b.get("note")})
 
 
@@ -127,5 +135,6 @@ def delete_bookmark(bookmark_id: int) -> str:
     Returns:
         A confirmation message.
     """
-    _request("DELETE", f"/bookmarks/{int(bookmark_id)}")
-    return f"Deleted bookmark {int(bookmark_id)}."
+    bookmark_id = _require_id(bookmark_id)
+    _request("DELETE", f"/bookmarks/{bookmark_id}")
+    return f"Deleted bookmark {bookmark_id}."

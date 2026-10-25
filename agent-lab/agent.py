@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import ollama
 from ollama import Message
 
-from bookmark_tools import create_bookmark, delete_bookmark, get_bookmark, list_bookmarks
+from bookmark_tools import _require_id, create_bookmark, delete_bookmark, get_bookmark, list_bookmarks
 
 MODEL = os.environ.get("AGENT_MODEL", "llama3.1:8b")
 OPTIONS = {"num_ctx": 16384}       # plenty for this agent, and far lighter on memory than the default
@@ -177,7 +177,7 @@ def execute_tool(call, approve=ask_human, known_ids: set[int] | None = None,
     try:
         if name not in TOOLS:
             raise ValueError(f"Unknown tool {name!r}.")
-        if name in NEEDS_PRIOR_LOOKUP and int(args.get("bookmark_id", -1)) not in (known_ids or set()):
+        if name in NEEDS_PRIOR_LOOKUP and _require_id(args.get("bookmark_id", -1)) not in (known_ids or set()):
             return False, ("Error: you haven't looked this bookmark up yet. Call list_bookmarks "
                            "to find its id; never guess an id.")
         params = inspect.signature(TOOLS[name]).parameters

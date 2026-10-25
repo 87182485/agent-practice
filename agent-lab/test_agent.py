@@ -183,6 +183,11 @@ def execute_tool(call, approve=ask_human, known_ids: set[int] | None = None,
         params = inspect.signature(TOOLS[name]).parameters
         unknown = sorted(set(args) - set(params))
         args = {k: v for k, v in args.items() if k in params}      # drop invented arguments...
+        missing = [p for p, spec in params.items()
+            if spec.default is inspect.Parameter.empty and p not in args]
+        if missing:
+            return False, (f"Error: {name} needs {', '.join(missing)}. Use values from the user's message "
+                   "or earlier tool results; bookmark ids come from list_bookmarks.")
         needs_approval = name in NEEDS_APPROVAL or name in extra_approval
         if needs_approval and not approve(describe_action(name, args)):
             return False, "The user declined this action. Do not retry it unless the user asks again."
