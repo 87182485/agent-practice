@@ -10,6 +10,20 @@ agent-practice/
 └── agent-lab/         a tool-calling agent that drives the API, plus prompt-injection experiments
 ```
 
+## Setup
+
+Both projects share one virtual environment at the repo root:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+The root `requirements.txt` includes `python-practice/requirements-dev.txt` and
+`agent-lab/requirements.txt`. The commands below assume the environment is
+activated.
+
 ## python-practice: the bookmark API
 
 A REST API for saving bookmarks, tagging them and grouping them into
@@ -38,9 +52,6 @@ Every route except `/users` and `/token` needs a token.
 
 ```bash
 cd python-practice
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
 
 # The app won't start without a signing key. .env is git-ignored.
 echo "SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')" > .env
@@ -106,9 +117,6 @@ running as described above.
 ollama pull llama3.1:8b
 
 cd agent-lab
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 
 # A user for the agent. Create it once with POST /users in the API docs.
 export BOOKMARK_USER=agent-user
