@@ -33,7 +33,7 @@ import bookmark_tools
 # ---- Where the API lives (adjust to your setup) ----------------------------------
 
 API_DIR = Path(os.environ.get("EVAL_API_DIR", "~/projects/agent-practice/python-practice")).expanduser()
-API_PYTHON = os.environ.get("EVAL_API_PYTHON", str(API_DIR / ".venv" / "bin" / "python"))
+API_PYTHON = os.environ.get("EVAL_API_PYTHON", str(API_DIR.parent / ".venv" / "bin" / "python"))   # shared repo-root venv
 PORT = int(os.environ.get("EVAL_PORT", "8001"))      # not 8000: evals never touch your dev DB
 BASE = f"http://127.0.0.1:{PORT}"
 REGISTER_PATH = os.environ.get("EVAL_REGISTER_PATH", "/users")   # check app.openapi()

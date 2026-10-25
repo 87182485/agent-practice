@@ -85,6 +85,8 @@ behalf. It runs entirely on your machine using `llama3.1:8b` through Ollama.
 | `bookmark_tools.py` | The tools: `list_bookmarks`, `get_bookmark`, `create_bookmark`, `delete_bookmark`. They log in with credentials from environment variables, which never reach the model. |
 | `agent.py` | The agent loop: tool calling, guardrails and prompt-injection defenses |
 | `plant_injections.py` | Plants test bookmarks containing prompt-injection attacks, and removes them with `--cleanup` |
+| `evals.py` | Runs scripted test cases against a fresh copy of the API on port 8001 and grades the results. `test_eval_checks.py` tests the grading. |
+| `BASELINE.MD` | Eval results and failure analysis comparing `gemma4:26b` and `llama3.1:8b`. Raw logs are in `eval_results/`. |
 
 ### How the agent stays safe
 
@@ -136,5 +138,4 @@ reserved `.example` domain and points nowhere.
 
 ## Status
 
-This is a personal learning repo, not a maintained product. `agent-lab` has no
-tests yet: `test_agent.py` is currently a copy of `agent.py`.
+This is a personal learning repo, not a maintained product.
