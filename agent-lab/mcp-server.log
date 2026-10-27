@@ -1,0 +1,30 @@
+[10/26/26 17:15:02] INFO     HTTP Request: POST                  _client.py:1026
+                             http://127.0.0.1:8000/token                        
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks?lim                
+                             it=100 "HTTP/1.1 200 OK"                           
+[10/26/26 17:16:01] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/62                 
+                             "HTTP/1.1 200 OK"                                  
+[10/26/26 17:16:55] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/62                 
+                             "HTTP/1.1 200 OK"                                  
+[10/26/26 17:17:14] INFO     HTTP Request: DELETE                _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/62                 
+                             "HTTP/1.1 204 No Content"                          
+[10/26/26 17:17:27] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks?lim                
+                             it=100 "HTTP/1.1 200 OK"                           
+[10/26/26 17:17:46] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/59                 
+                             "HTTP/1.1 200 OK"                                  
+[10/26/26 17:17:47] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/59                 
+                             "HTTP/1.1 200 OK"                                  
+[10/26/26 17:17:49] INFO     HTTP Request: DELETE                _client.py:1026
+                             http://127.0.0.1:8000/bookmarks/59                 
+                             "HTTP/1.1 204 No Content"                          
+[10/26/26 17:18:01] INFO     HTTP Request: GET                   _client.py:1026
+                             http://127.0.0.1:8000/bookmarks?lim                
+                             it=100 "HTTP/1.1 200 OK"                           
