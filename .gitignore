@@ -1,16 +1,13 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
+.venv/
 .pytest_cache/
 
-# virtualenvs
-.venv/
-venv/
+# Runtime logs: regenerated on every run
+mcp-server.log
+run-*.txt
 
-# secrets
+# Local settings: may hold paths or credentials
+eval.env
 .env
-
-# editors / OS
-.vscode/
-.idea/
-.DS_Store
