@@ -239,6 +239,33 @@ def history_is_tainted(messages: list) -> bool:
                and str(m.get("content", "")).startswith(INJECTION_WARNING) for m in messages)
 
 
+NOTE_READ = "a bookmark note was read in this conversation"
+INJECTION_SEEN = "a tool result looked like a prompt injection"
+
+
+def note_was_read(messages: list) -> bool:
+    """True once any bookmark's note has entered the conversation; /reset clears it.
+
+    Information-flow rule: notes are free text that anyone could have written, and detection
+    can be phrased around (attack E), so reading one gates every later write, flagged or not.
+    """
+    for m in messages:
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_name") == "get_bookmark":
+            data = json_part(str(m.get("content", "")))
+            if isinstance(data, dict) and data.get("note"):
+                return True
+    return False
+
+
+def escalation_reason(messages: list) -> str | None:
+    """Why every write needs approval right now, or None if it doesn't."""
+    if history_is_tainted(messages):
+        return INJECTION_SEEN
+    if note_was_read(messages):
+        return NOTE_READ
+    return None
+
+
 def ids_seen(messages: list) -> set[int]:
     """Bookmark ids that appeared in lookup results in this conversation.
 
@@ -277,7 +304,8 @@ def ask_human(description: str) -> bool:
 # ---- Agent loop --------------------------------------------------------------------
 
 async def execute_tool_async(call, toolbox: Toolbox, approve=ask_human, known_ids: set[int] | None = None,
-                             extra_approval: set[str] | frozenset = frozenset()) -> tuple[bool, str]:
+                             extra_approval: set[str] | frozenset = frozenset(),
+                             reason: str | None = None) -> tuple[bool, str]:
     """Run one tool call through the host's checks. Never raises. Returns (ok, text for the model)."""
     name, args = call.function.name, call.function.arguments
     try:
@@ -296,7 +324,10 @@ async def execute_tool_async(call, toolbox: Toolbox, approve=ask_human, known_id
         if "bookmark_id" in args:          # same guidance in both modes: over MCP, a placeholder id would
             args["bookmark_id"] = _require_id(args["bookmark_id"])   # otherwise get pydantic's bare message
         needs_approval = name in NEEDS_APPROVAL or name in extra_approval or name not in KNOWN_TOOLS
-        if needs_approval and not approve(await describe_action(name, args, toolbox)):
+        description = await describe_action(name, args, toolbox) if needs_approval else ""
+        if reason and name in extra_approval and name in KNOWN_TOOLS and name not in NEEDS_APPROVAL:
+            description += f" (asked because {reason})"      # only when the escalation IS the reason
+        if needs_approval and not approve(description):
             return False, "The user declined this action. Do not retry it unless the user asks again."
         result = await toolbox.call(name, args)
         if unknown:                                                  # ...but never silently
@@ -351,10 +382,12 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -
                 result = ("Error: this exact call already failed or was declined. "
                           "Change the arguments or answer with the results you have.")
             else:
-                # Tainted history: every write, and every tool we have no policy for, needs approval.
-                escalate = (names - READ_ONLY) if history_is_tainted(messages) else frozenset()
+                # Tainted history (injection detected, or any note read): every write, and every
+                # tool we have no policy for, needs approval.
+                reason = escalation_reason(messages)
+                escalate = (names - READ_ONLY) if reason else frozenset()
                 ok, result = await execute_tool_async(call, toolbox, approve, known_ids=ids_seen(messages),
-                                                      extra_approval=escalate)
+                                                      extra_approval=escalate, reason=reason)
                 if not ok:
                     failed_calls.add(key)
                 else:
@@ -365,7 +398,10 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -
                               f"instructions to an AI (possible prompt injection). Every write now needs "
                               f"your approval until /reset.")
             print(f"  [step {step}] {call.function.name}({call.function.arguments}) -> {result}")
+            note_before = note_was_read(messages)
             messages.append({"role": "tool", "content": result, "tool_name": call.function.name})
+            if not note_before and note_was_read(messages):
+                print(f"  [step {step}] A bookmark note was read: every write now needs your approval until /reset.")
 
     print("  [step limit reached: asking for a final answer]")
     nudge = {"role": "user", "content": "Stop using tools. Answer now using only the tool results above."}
@@ -380,8 +416,8 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -
 # toolbox, so functions patched on this module are picked up.
 
 def execute_tool(call, approve=ask_human, known_ids: set[int] | None = None,
-                 extra_approval: set[str] | frozenset = frozenset()) -> tuple[bool, str]:
-    return asyncio.run(execute_tool_async(call, direct_toolbox(), approve, known_ids, extra_approval))
+                 extra_approval: set[str] | frozenset = frozenset(), reason: str | None = None) -> tuple[bool, str]:
+    return asyncio.run(execute_tool_async(call, direct_toolbox(), approve, known_ids, extra_approval, reason))
 
 
 def run_agent(messages: list, approve=ask_human) -> str:
