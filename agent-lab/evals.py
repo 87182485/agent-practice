@@ -129,6 +129,7 @@ class Outcome:
     seconds: float = 0.0
     log: str = ""
     error: str | None = None
+    events: list[dict] = field(default_factory=list)   # model_call events, for debugging
 
 
 @dataclass
@@ -324,26 +325,27 @@ def describe_error(e: BaseException) -> str:
     return f"{type(e).__name__}: {e}"
 
 
-def run_direct(messages: list, human: ScriptedHuman) -> tuple[str, float]:
+def run_direct(messages: list, human: ScriptedHuman, trace=None) -> tuple[str, float]:
     bookmark_tools._token = None                     # new database, new user: log in again
     t0 = time.monotonic()
-    answer = agent.run_agent(messages, approve=human)
+    answer = agent.run_agent(messages, approve=human, trace=trace)
     return answer or "", time.monotonic() - t0
 
 
-async def run_over_mcp(messages: list, human: ScriptedHuman, server_log: Path) -> tuple[str, float]:
+async def run_over_mcp(messages: list, human: ScriptedHuman, server_log: Path, trace=None) -> tuple[str, float]:
     """A fresh server.py per run, pointed at this run's API. Timing excludes server startup,
     so direct and MCP seconds compare the agent, not the process launch."""
     env = {"BOOKMARK_API": BASE, "BOOKMARK_USER": USER, "BOOKMARK_PASSWORD": PASSWORD}
     async with agent.mcp_toolbox(env=env, log=server_log) as toolbox:
         t0 = time.monotonic()
-        answer = await agent.run_agent_async(messages, toolbox, approve=human)
+        answer = await agent.run_agent_async(messages, toolbox, approve=human, trace=trace)
         return answer or "", time.monotonic() - t0
 
 
 def run_once(case: Case, tools: str = "direct") -> Outcome:
     human = ScriptedHuman(case.approve)
     messages = agent.new_conversation() + [{"role": "user", "content": case.prompt}]
+    events: list[dict] = []
     with tempfile.TemporaryDirectory() as tmp, fresh_api(Path(tmp)):
         seed(case.seed)
         before = snapshot()
@@ -352,9 +354,9 @@ def run_once(case: Case, tools: str = "direct") -> Outcome:
         try:
             with contextlib.redirect_stdout(buf):    # the agent's step log goes into the results file
                 if tools == "mcp":
-                    answer, seconds = asyncio.run(run_over_mcp(messages, human, server_log))
+                    answer, seconds = asyncio.run(run_over_mcp(messages, human, server_log, events.append))
                 else:
-                    answer, seconds = run_direct(messages, human)
+                    answer, seconds = run_direct(messages, human, trace=events.append)
         except Exception as e:                       # one crashed run is a failure, not a crashed eval
             error = describe_error(e)
         if server_log.exists() and (server_text := server_log.read_text().strip()):
@@ -364,12 +366,23 @@ def run_once(case: Case, tools: str = "direct") -> Outcome:
     return Outcome(answer, before, after, human.asked,
                    tools=[m["tool_name"] for m in tool_msgs],
                    results=[str(m.get("content", "")) for m in tool_msgs],
-                   seconds=seconds, log=buf.getvalue(), error=error)
+                   seconds=seconds, log=buf.getvalue(), error=error, events=events)
 
 
 def grade(case: Case, o: Outcome) -> list[str]:
     return [f"run crashed: {o.error}"] if o.error else case.check(o)
 
+def perf_summary(outcomes: list[Outcome]) -> dict:
+    """Generation performance across runs, from the model_call trace events."""
+    calls = [e for o in outcomes for e in o.events if e["type"] == "model_call"]
+    tokens = sum(e.get("output_tokens") or 0 for e in calls)
+    gen_seconds = sum(e.get("output_seconds") or 0 for e in calls)
+    load = sum(e.get("load_seconds") or 0 for e in calls)
+    return {
+        "output_tokens_per_run": tokens / len(outcomes),
+        "tokens_per_second": tokens / gen_seconds if gen_seconds else None,
+        "load_seconds_per_run": load / len(outcomes)
+    }
 
 def main() -> None:
     p = argparse.ArgumentParser()
@@ -396,6 +409,7 @@ def main() -> None:
     safe_model = re.sub(r"[^\w.-]", "_", args.model)            # "gemma4:26b" -> "gemma4_26b"
     out = RESULTS_DIR / f"{datetime.now():%Y%m%d-%H%M%S}-{safe_model}-{args.tools}.jsonl"
     summary = []
+    perf_rows = []
     with out.open("w") as f:
         for case in cases:
             results = []
@@ -409,12 +423,12 @@ def main() -> None:
                       f"({o.seconds:.1f}s, tools: {', '.join(o.tools) or 'none'}{exposed})")
                 for reason in fails:
                     print(f"    - {reason}")
-                f.write(json.dumps({"model": args.model, "tools": args.tools, "case": case.name, "run": i,
+                f.write(json.dumps({"model": args.model, "mode": args.tools, "case": case.name, "run": i,
                                     "passed": not fails, "failures": fails, "answer": o.answer,
                                     "write_attempts": write_attempts(o),
                                     "exposed": None if case.exposure is None else case.exposure(o),
                                     "tools": o.tools, "asked": o.asked, "seconds": round(o.seconds, 2),
-                                    "error": o.error, "log": o.log}) + "\n")
+                                    "error": o.error, "log": o.log, "events": o.events}) + "\n")
                 f.flush()
             passes = sum(not fails for fails, _ in results)
             # Resistance is measured only on runs where the attack actually reached the model.
@@ -425,6 +439,7 @@ def main() -> None:
                             "-" if case.exposure is None else f"{len(tested)}/{args.n}",
                             f"{sum(write_attempts(o) > 0 for o in tested)}/{len(tested)}",
                             statistics.mean(len(o.asked) for _, o in results)))
+            perf_rows.append((case.name, perf_summary([o for _, o in results])))
 
     print(f"\n{args.model} ({args.tools} tools): results in {out}")
     print(f"{'case':<24} {'pass':>7} {'median s':>9} {'avg tools':>10} {'exposed':>8} {'tried writes':>13} {'approvals':>10}")
@@ -432,7 +447,10 @@ def main() -> None:
         print(f"{name:<24} {passes:>3}/{n:<3} {med:>9.1f} {tools:>10.1f} {exposed:>8} {tried:>13} {approvals:>10.1f}")
     print("tried writes counts exposed runs only, for cases that measure exposure.")
     print("approvals = average approval prompts per run: the friction a human would feel.")
-
+    print(f"\n{'case':<24} {'out tok/run':>12} {'tok/s':>8} {'load s/run':>11}")
+    for name, p in perf_rows:
+        rate = "-" if p["tokens_per_second"] is None else f"{p['tokens_per_second']:.1f}"
+        print(f"{name:<24} {p['output_tokens_per_run']:>12.1f} {rate:>8} {p['load_seconds_per_run']:>11.1f}")
 
 if __name__ == "__main__":
     main()

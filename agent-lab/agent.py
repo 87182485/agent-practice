@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -82,6 +83,9 @@ def days_between(start: str, end: str) -> str:
         raise ValueError(f"Dates must be YYYY-MM-DD, got start={start!r}, end={end!r}.")
     return str(delta.days)
 
+def _seconds(ns) -> float | None:
+    return None if ns is None else ns / 1e9
+
 
 TOOLS = {f.__name__: f for f in (
     get_current_time_in_timezone, days_between,
@@ -114,6 +118,7 @@ class Toolbox:
         self.specs: list = []                       # what the model is shown
         self.params: dict[str, set[str]] = {}
         self.required: dict[str, set[str]] = {}
+        self.remote: set[str] = set()                       # names of tools that are remote (MCP)
         self._calls: dict[str, Callable[[dict], Awaitable[str]]] = {}
 
     def names(self) -> set[str]:
@@ -137,6 +142,7 @@ class Toolbox:
             "name": tool.name, "description": tool.description or "", "parameters": schema}})
         self.params[tool.name] = set(schema.get("properties", {}))
         self.required[tool.name] = set(schema.get("required", []))
+        self.remote.add(tool.name)
 
         async def call(args: dict) -> str:
             result = await client.call_tool(tool.name, args)
@@ -149,6 +155,36 @@ class Toolbox:
     async def call(self, name: str, args: dict) -> str:
         return await self._calls[name](args)
 
+def model_call_event(step: int, response, seconds: float) -> dict:
+    """One model call, as a trace event. Missing fields (fakes, other backends) become None."""
+    return {
+        "type": "model_call",
+        "step": step,
+        "seconds": seconds,
+        "prompt_tokens": getattr(response, "prompt_eval_count", None),
+        "output_tokens": getattr(response, "eval_count", None),
+        "prompt_seconds": _seconds(getattr(response, "prompt_eval_duration", None)),
+        "output_seconds": _seconds(getattr(response, "eval_duration", None)),
+        "load_seconds": _seconds(getattr(response, "load_duration", None)),
+        "tool_calls": len(response.message.tool_calls or []),
+    }
+
+def tool_call_event(step: int, call, ok: bool, executed: bool, result: str,
+                    seconds: float, toolbox: Toolbox) -> dict:
+    """One tool call, as a trace event. Argument names only: values may be user data."""
+    name = call.function.name
+    return {
+        "type": "tool_call",
+        "step": step,
+        "name": name,
+        "remote": name in toolbox.remote,
+        "arg_names": sorted(call.function.arguments.keys()) if call.function.arguments else [],
+        "ok": ok,
+        "executed": executed,
+        "seconds": seconds,
+        "result_chars": len(result),
+        "error": result[:200] if not ok else None
+    }
 
 def direct_toolbox() -> Toolbox:
     """Everything in-process. Looks the functions up at call time, so tests can patch them."""
@@ -358,19 +394,23 @@ def parse_text_tool_call(content: str, tool_names=None):
     return Message.ToolCall(function=Message.ToolCall.Function(name=data["name"], arguments=args))
 
 
-async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -> str:
+async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human, trace=None) -> str:
     """Call the model until it answers without requesting tools."""
     failed_calls = set()
     names = toolbox.names()
 
     for step in range(1, MAX_STEPS + 1):
+        t0 = time.monotonic()
         response = await asyncio.to_thread(ollama.chat, model=MODEL, messages=messages,
                                            tools=toolbox.specs, options=OPTIONS)
+        seconds = time.monotonic() - t0
         if not response.message.tool_calls:
             recovered = parse_text_tool_call(response.message.content or "", names)
             if recovered:
                 print(f"  [step {step}] (recovered a tool call the model wrote as text)")
                 response.message.tool_calls = [recovered]
+        if trace:
+            trace(model_call_event(step, response, seconds))
         messages.append(response.message)
 
         if not response.message.tool_calls:
@@ -378,12 +418,15 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -
 
         for call in response.message.tool_calls:
             key = (call.function.name, json.dumps(call.function.arguments, sort_keys=True))
+            time0 = time.monotonic()
             if key in failed_calls:
+                ok, executed = False, False
                 result = ("Error: this exact call already failed or was declined. "
                           "Change the arguments or answer with the results you have.")
             else:
                 # Tainted history (injection detected, or any note read): every write, and every
                 # tool we have no policy for, needs approval.
+                executed = True
                 reason = escalation_reason(messages)
                 escalate = (names - READ_ONLY) if reason else frozenset()
                 ok, result = await execute_tool_async(call, toolbox, approve, known_ids=ids_seen(messages),
@@ -397,6 +440,9 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human) -
                         print(f"  WARNING [step {step}] {call.function.name} returned text that looks like "
                               f"instructions to an AI (possible prompt injection). Every write now needs "
                               f"your approval until /reset.")
+            seconds = time.monotonic() - time0
+            if trace:
+                trace(tool_call_event(step, call, ok, executed, result, seconds, toolbox))
             print(f"  [step {step}] {call.function.name}({call.function.arguments}) -> {result}")
             note_before = note_was_read(messages)
             messages.append({"role": "tool", "content": result, "tool_name": call.function.name})
@@ -420,8 +466,8 @@ def execute_tool(call, approve=ask_human, known_ids: set[int] | None = None,
     return asyncio.run(execute_tool_async(call, direct_toolbox(), approve, known_ids, extra_approval, reason))
 
 
-def run_agent(messages: list, approve=ask_human) -> str:
-    return asyncio.run(run_agent_async(messages, direct_toolbox(), approve))
+def run_agent(messages: list, approve=ask_human, trace=None) -> str:
+    return asyncio.run(run_agent_async(messages, direct_toolbox(), approve, trace))
 
 
 # ---- Chat --------------------------------------------------------------------------

@@ -188,3 +188,30 @@ def test_save_link_passes_when_only_the_slides_link_is_added():
 ])
 def test_save_link_fails_on_wrong_outcome(kw):
     assert grade("save_link_from_note", **kw)
+
+# ---- perf_summary ----
+
+def with_model_calls(name, *calls):
+    """An outcome whose trace has one model_call per (output_tokens, output_seconds, load_seconds)."""
+    o = outcome(name)
+    o.events = [{"type": "model_call", "output_tokens": t, "output_seconds": s, "load_seconds": l}
+                for t, s, l in calls]
+    return o
+
+
+def test_perf_summary_aggregates_model_calls():
+    from evals import perf_summary
+    runs = [with_model_calls("count_bookmarks", (20, 0.5, 0.0), (5, 0.25, 0.0)),   # run 1: 25 tokens
+            with_model_calls("count_bookmarks", (30, 1.0, 2.0))]                   # run 2: 30 tokens, a reload
+    s = perf_summary(runs)
+    assert s["output_tokens_per_run"] == 27.5                  # (25 + 30) / 2 runs
+    assert s["tokens_per_second"] == pytest.approx(55 / 1.75)  # all tokens / all generation time
+    assert s["load_seconds_per_run"] == 1.0                    # (0 + 2) / 2 runs
+
+
+def test_perf_summary_tolerates_missing_numbers():
+    from evals import perf_summary
+    runs = [with_model_calls("count_bookmarks", (None, None, None))]   # a backend that reports nothing
+    s = perf_summary(runs)
+    assert s["output_tokens_per_run"] == 0
+    assert s["tokens_per_second"] is None                      # no generation time: no rate, not a crash

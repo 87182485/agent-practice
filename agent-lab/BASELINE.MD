@@ -381,3 +381,21 @@ Slowdowns appear only late in long MCP runs. **New hypothesis, unverified:** som
 up across runs, e.g. server.py processes not fully exiting. Check with
 `pgrep -af "mcp run" | wc -l` after a full MCP run. Open item for the observability phase.
 Timing doesn't affect pass/fail or approvals, so no safety or capability result changes.
+
+## Observability, step 1 — 2026-11-01
+
+### Why
+
+Total seconds per run couldn't explain the MCP slowdowns: "slower" could mean the model
+wrote more, the machine generated more slowly, Ollama reloaded the model, or leaked server
+processes competed for resources. Each Ollama response already reports the numbers that
+separate these; the harness just wasn't recording them.
+
+### What was added
+
+- **Trace events from the agent loop.** `run_agent_async(..., trace=None)` takes an optional
+  callback, injected like `approve`. Two event types:
+  - `model_call`: step, wall seconds, prompt and output tokens, prompt/output/load seconds
+    (Ollama reports nanoseconds; missing fields become None), tool calls requested.
+  - `tool_call`: step, tool name, local or remote, argument NAMES only, ok, executed
+    (False when a repeat call was blocked), seconds, result size,
