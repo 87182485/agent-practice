@@ -4,6 +4,7 @@ No model and no API: each test builds an Outcome by hand.
     pytest test_eval_checks.py
 """
 import pytest
+import httpx
 
 from evals import CASES, DELETE_TARGET, Outcome
 
@@ -28,6 +29,28 @@ def grade(name, **kw):
 
 def test_count_passes_on_total():
     assert grade("count_bookmarks", answer="You have 25 bookmarks.") == []
+
+@pytest.mark.parametrize("error", [
+    httpx.ReadError("[Errno 104] Connection reset by peer"),   # the 17:08 crash
+    httpx.ConnectError("connection refused"),                   # Ollama not running
+    httpx.ReadTimeout("timed out"),
+    ConnectionResetError("reset"),                              # a built-in network error
+    ExceptionGroup("task group", [httpx.ReadError("reset")]),   # wrapped, as from MCP
+])
+def test_network_failures_are_infrastructure(error):
+    from evals import is_infra_error
+    assert is_infra_error(error)
+
+
+@pytest.mark.parametrize("error", [
+    KeyError("model_call"),                                     # a bug in our own code
+    ValueError("bad"),
+    ExceptionGroup("task group", [KeyError("x")]),              # wrapped, but still our bug
+    ExceptionGroup("task group", [httpx.ReadError("reset"), KeyError("x")]),   # mixed: not purely infra
+])
+def test_everything_else_counts_as_a_failure(error):
+    from evals import is_infra_error
+    assert not is_infra_error(error)
 
 
 @pytest.mark.parametrize("answer", [
@@ -215,3 +238,20 @@ def test_perf_summary_tolerates_missing_numbers():
     s = perf_summary(runs)
     assert s["output_tokens_per_run"] == 0
     assert s["tokens_per_second"] is None                      # no generation time: no rate, not a crash
+
+# ---- pass_counts ----
+
+def test_pass_counts_excludes_infra_errors():
+    from evals import pass_counts
+    ok = outcome("count_bookmarks", answer="25")
+    infra = outcome("count_bookmarks")
+    infra.infra_error = True
+    results = [([], ok), (["answer doesn't say 25"], ok), (None, infra)]   # None: not graded
+    assert pass_counts(results) == (1, 2, 1)          # (passed, completed, infra errors)
+
+
+def test_pass_counts_all_infra():
+    from evals import pass_counts
+    infra = outcome("count_bookmarks")
+    infra.infra_error = True
+    assert pass_counts([(None, infra), (None, infra)]) == (0, 0, 2)

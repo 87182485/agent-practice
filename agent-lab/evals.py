@@ -44,6 +44,7 @@ REGISTER_PATH = os.environ.get("EVAL_REGISTER_PATH", "/users")   # check app.ope
 USER, PASSWORD = "eval-user", "eval-password-123"
 RESULTS_DIR = Path(__file__).parent / "eval_results"
 
+INFRA_ERRORS = (httpx.TransportError, ConnectionError)
 
 # ---- Fresh state per run ---------------------------------------------------------
 
@@ -130,6 +131,7 @@ class Outcome:
     log: str = ""
     error: str | None = None
     events: list[dict] = field(default_factory=list)   # model_call events, for debugging
+    infra_error: bool = False          # the run never tested the agent: a network failure
 
 
 @dataclass
@@ -324,6 +326,13 @@ def describe_error(e: BaseException) -> str:
         return "; ".join(describe_error(sub) for sub in e.exceptions)
     return f"{type(e).__name__}: {e}"
 
+def is_infra_error(e: BaseException) -> bool:
+    """True only if EVERY underlying error is a network failure, so the run tested nothing.
+    Anything else, including our own bugs, still counts as a failed run."""
+    if isinstance(e, ExceptionGroup):
+        return all(is_infra_error(sub) for sub in e.exceptions)
+    return isinstance(e, INFRA_ERRORS)
+
 
 def run_direct(messages: list, human: ScriptedHuman, trace=None) -> tuple[str, float]:
     bookmark_tools._token = None                     # new database, new user: log in again
@@ -351,6 +360,7 @@ def run_once(case: Case, tools: str = "direct") -> Outcome:
         before = snapshot()
         server_log = Path(tmp) / "mcp-server.log"
         buf, answer, seconds, error = io.StringIO(), "", 0.0, None
+        infra = False
         try:
             with contextlib.redirect_stdout(buf):    # the agent's step log goes into the results file
                 if tools == "mcp":
@@ -359,6 +369,7 @@ def run_once(case: Case, tools: str = "direct") -> Outcome:
                     answer, seconds = run_direct(messages, human, trace=events.append)
         except Exception as e:                       # one crashed run is a failure, not a crashed eval
             error = describe_error(e)
+            infra = is_infra_error(e)
         if server_log.exists() and (server_text := server_log.read_text().strip()):
             buf.write(f"\n--- mcp server log (last 3000 chars) ---\n{server_text[-3000:]}\n")
         after = snapshot()
@@ -366,11 +377,18 @@ def run_once(case: Case, tools: str = "direct") -> Outcome:
     return Outcome(answer, before, after, human.asked,
                    tools=[m["tool_name"] for m in tool_msgs],
                    results=[str(m.get("content", "")) for m in tool_msgs],
-                   seconds=seconds, log=buf.getvalue(), error=error, events=events)
+                   seconds=seconds, log=buf.getvalue(), error=error, events=events, infra_error=infra)
 
 
 def grade(case: Case, o: Outcome) -> list[str]:
     return [f"run crashed: {o.error}"] if o.error else case.check(o)
+
+def pass_counts(results: list) -> tuple[int, int, int]:
+    """(passed, completed, infra errors) over (failures, outcome) pairs; failures is None if not graded."""
+    completed = [r for r in results if r[0] is not None]
+    passed = sum(1 for failures, _ in completed if not failures)
+    infra = sum(1 for failures, o in results if failures is None and o.infra_error)
+    return (passed, len(completed), infra)
 
 def perf_summary(outcomes: list[Outcome]) -> dict:
     """Generation performance across runs, from the model_call trace events."""
@@ -415,40 +433,53 @@ def main() -> None:
             results = []
             for i in range(1, args.n + 1):
                 o = run_once(case, args.tools)
-                fails = grade(case, o)
+                fails = None if o.infra_error else grade(case, o)
                 results.append((fails, o))
                 exposed = "" if case.exposure is None else (
                     ", exposed" if case.exposure(o) else ", NOT exposed (not a test of resistance)")
-                print(f"{case.name} {i}/{args.n}: {'PASS' if not fails else 'FAIL'} "
+                verdict = "INFRA" if fails is None else "PASS" if not fails else "FAIL"
+                print(f"{case.name} {i}/{args.n}: {verdict} "
                       f"({o.seconds:.1f}s, tools: {', '.join(o.tools) or 'none'}{exposed})")
-                for reason in fails:
+                if fails is None:
+                    print(f"    - infra error, the run never tested the agent: {o.error}")
+                for reason in fails or []:
                     print(f"    - {reason}")
                 f.write(json.dumps({"model": args.model, "mode": args.tools, "case": case.name, "run": i,
-                                    "passed": not fails, "failures": fails, "answer": o.answer,
+                                    "passed": None if fails is None else not fails, "failures": fails, "answer": o.answer,
                                     "write_attempts": write_attempts(o),
                                     "exposed": None if case.exposure is None else case.exposure(o),
                                     "tools": o.tools, "asked": o.asked, "seconds": round(o.seconds, 2),
-                                    "error": o.error, "log": o.log, "events": o.events}) + "\n")
+                                    "error": o.error, "log": o.log, "events": o.events, "infra_error": o.infra_error}) + "\n")
                 f.flush()
-            passes = sum(not fails for fails, _ in results)
+            passes, completed, infra = pass_counts(results)
+            done = [o for f, o in results if f is not None]
             # Resistance is measured only on runs where the attack actually reached the model.
-            tested = [o for _, o in results if case.exposure is None or case.exposure(o)]
-            summary.append((case.name, passes, args.n,
-                            statistics.median(o.seconds for _, o in results),
-                            statistics.mean(len(o.tools) for _, o in results),
-                            "-" if case.exposure is None else f"{len(tested)}/{args.n}",
-                            f"{sum(write_attempts(o) > 0 for o in tested)}/{len(tested)}",
-                            statistics.mean(len(o.asked) for _, o in results)))
-            perf_rows.append((case.name, perf_summary([o for _, o in results])))
+            tested = [o for o in done if case.exposure is None or case.exposure(o)]
+            if done:
+                median_s = f"{statistics.median(o.seconds for o in done):.1f}"
+                avg_tools = f"{statistics.mean(len(o.tools) for o in done):.1f}"
+                approvals = f"{statistics.mean(len(o.asked) for o in done):.1f}"
+            else:
+                median_s = avg_tools = approvals = "-"
+            exposed = "-" if case.exposure is None else f"{len(tested)}/{completed}"
+            tried = f"{sum(write_attempts(o) > 0 for o in tested)}/{len(tested)}"
+            summary.append((case.name, f"{passes}/{completed}", infra,
+                            median_s, avg_tools, exposed, tried, approvals))
+            perf_rows.append((case.name, perf_summary(done) if done else None))
 
     print(f"\n{args.model} ({args.tools} tools): results in {out}")
-    print(f"{'case':<24} {'pass':>7} {'median s':>9} {'avg tools':>10} {'exposed':>8} {'tried writes':>13} {'approvals':>10}")
-    for name, passes, n, med, tools, exposed, tried, approvals in summary:
-        print(f"{name:<24} {passes:>3}/{n:<3} {med:>9.1f} {tools:>10.1f} {exposed:>8} {tried:>13} {approvals:>10.1f}")
+    print(f"{'case':<24} {'pass':>7} {'infra':>6} {'median s':>9} {'avg tools':>10} "
+          f"{'exposed':>8} {'tried writes':>13} {'approvals':>10}")
+    for name, passed, infra, median_s, avg_tools, exposed, tried, approvals in summary:
+        print(f"{name:<24} {passed:>7} {infra:>6} {median_s:>9} {avg_tools:>10} "
+              f"{exposed:>8} {tried:>13} {approvals:>10}")
     print("tried writes counts exposed runs only, for cases that measure exposure.")
     print("approvals = average approval prompts per run: the friction a human would feel.")
     print(f"\n{'case':<24} {'out tok/run':>12} {'tok/s':>8} {'load s/run':>11}")
     for name, p in perf_rows:
+        if p is None:
+            print(f"{name:<24} {'-':>12} {'-':>8} {'-':>11}")
+            continue
         rate = "-" if p["tokens_per_second"] is None else f"{p['tokens_per_second']:.1f}"
         print(f"{name:<24} {p['output_tokens_per_run']:>12.1f} {rate:>8} {p['load_seconds_per_run']:>11.1f}")
 
