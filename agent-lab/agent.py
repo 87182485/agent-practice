@@ -207,6 +207,25 @@ async def toolbox_from_client(client) -> Toolbox:
         tb.add_remote(client, tool)
     return tb
 
+def mcp_error_message(e: BaseException, log: Path, offset: int, started: bool) -> str:
+    """One readable message for an MCP failure: the real cause, plus what the server logged."""
+    causes = "; ".join(leaf_messages(e))
+    headline = "The MCP connection failed" if started else "Couldn't start the bookmark tools over MCP"
+    message = f"{headline}: {causes}"
+    if log.exists():
+        with log.open("r") as f:
+            f.seek(offset)
+            new_lines = f.read().strip().splitlines()
+        if new_lines:
+            message += f"\nServer log ({log.name}, last lines):\n" + "\n".join(new_lines[-10:])
+    return message
+
+
+def leaf_messages(e: BaseException) -> list[str]:
+    """The real errors inside (possibly nested) ExceptionGroups."""
+    if isinstance(e, ExceptionGroup):
+        return [msg for sub in e.exceptions for msg in leaf_messages(sub)]
+    return [f"{type(e).__name__}: {e}"]
 
 @contextlib.asynccontextmanager
 async def mcp_toolbox(env: dict[str, str] | None = None, log: Path = SERVER_LOG):
@@ -214,7 +233,7 @@ async def mcp_toolbox(env: dict[str, str] | None = None, log: Path = SERVER_LOG)
 
     The server gets only HOME, PATH, TERM by default, so credentials are passed explicitly.
     """
-    from mcp import Client, StdioServerParameters     # only MCP mode needs the SDK
+    from mcp import Client, StdioServerParameters  # only MCP mode needs the SDK
     from mcp.client.stdio import stdio_client
 
     if not MCP_COMMAND.exists():                       # otherwise the failure is a wall of ExceptionGroups
@@ -331,6 +350,16 @@ async def describe_action(name: str, args: dict, toolbox: Toolbox) -> str:
         return f"run {name!r}, a tool this agent has no policy for, with {args}"
     return f"{name}({args})"
 
+def approval_basis(name: str, extra_approval) -> str | None:
+    """Why a tool call needs the human, or None if it doesn't. The single place this is decided."""
+    if name in NEEDS_APPROVAL:
+        return "always"
+    if name not in KNOWN_TOOLS:
+        return "unknown_tool"
+    if name in extra_approval:
+        return "escalated"
+    return None
+
 
 def ask_human(description: str) -> bool:
     answer = input(f"  ! The agent wants to {description}.\n  Allow? [y/N] ")
@@ -359,11 +388,11 @@ async def execute_tool_async(call, toolbox: Toolbox, approve=ask_human, known_id
                            "or earlier tool results; bookmark ids come from list_bookmarks.")
         if "bookmark_id" in args:          # same guidance in both modes: over MCP, a placeholder id would
             args["bookmark_id"] = _require_id(args["bookmark_id"])   # otherwise get pydantic's bare message
-        needs_approval = name in NEEDS_APPROVAL or name in extra_approval or name not in KNOWN_TOOLS
-        description = await describe_action(name, args, toolbox) if needs_approval else ""
-        if reason and name in extra_approval and name in KNOWN_TOOLS and name not in NEEDS_APPROVAL:
+        basis = approval_basis(name, extra_approval)
+        description = await describe_action(name, args, toolbox) if basis else ""
+        if basis == "escalated" and reason:
             description += f" (asked because {reason})"      # only when the escalation IS the reason
-        if needs_approval and not approve(description):
+        if basis and not approve(description):
             return False, "The user declined this action. Do not retry it unless the user asks again."
         result = await toolbox.call(name, args)
         if unknown:                                                  # ...but never silently
@@ -429,7 +458,21 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human, t
                 executed = True
                 reason = escalation_reason(messages)
                 escalate = (names - READ_ONLY) if reason else frozenset()
-                ok, result = await execute_tool_async(call, toolbox, approve, known_ids=ids_seen(messages),
+                human_seconds = 0.0
+
+                def traced_approve(description):
+                    nonlocal human_seconds
+                    t1 = time.monotonic()
+                    approved = approve(description)
+                    waited = time.monotonic() - t1
+                    human_seconds += waited
+                    if trace:
+                        basis = approval_basis(call.function.name, escalate)
+                        trace({"type": "approval", "step": step, "tool": call.function.name,
+                               "basis": basis, "reason": reason if basis == "escalated" else None,
+                               "approved": approved, "seconds": waited})
+                    return approved
+                ok, result = await execute_tool_async(call, toolbox, traced_approve, known_ids=ids_seen(messages),
                                                       extra_approval=escalate, reason=reason)
                 if not ok:
                     failed_calls.add(key)
@@ -444,10 +487,14 @@ async def run_agent_async(messages: list, toolbox: Toolbox, approve=ask_human, t
             if trace:
                 trace(tool_call_event(step, call, ok, executed, result, seconds, toolbox))
             print(f"  [step {step}] {call.function.name}({call.function.arguments}) -> {result}")
-            note_before = note_was_read(messages)
+            reason_before = escalation_reason(messages)
             messages.append({"role": "tool", "content": result, "tool_name": call.function.name})
-            if not note_before and note_was_read(messages):
-                print(f"  [step {step}] A bookmark note was read: every write now needs your approval until /reset.")
+            reason_after = escalation_reason(messages)
+            if reason_after and reason_after != reason_before:       # newly tainted, or worse than before
+                if trace:
+                    trace({"type": "taint", "step": step, "tool": call.function.name, "source": reason_after})
+                if reason_after == NOTE_READ:
+                    print(f"  [step {step}] A bookmark note was read: every write now needs your approval until /reset.")
 
     print("  [step limit reached: asking for a final answer]")
     nudge = {"role": "user", "content": "Stop using tools. Answer now using only the tool results above."}
@@ -496,9 +543,15 @@ async def chat(toolbox: Toolbox) -> None:
 
 async def amain() -> None:
     if TOOL_MODE == "mcp":
-        async with mcp_toolbox() as toolbox:
-            print(f"(tools: {', '.join(sorted(toolbox.names()))}; bookmark tools over MCP)")
-            await chat(toolbox)
+        offset = SERVER_LOG.stat().st_size if SERVER_LOG.exists() else 0
+        started = False
+        try:
+            async with mcp_toolbox() as toolbox:
+                started = True
+                print(f"(tools: {', '.join(sorted(toolbox.names()))}; bookmark tools over MCP)")
+                await chat(toolbox)
+        except Exception as e:
+            raise SystemExit(mcp_error_message(e, SERVER_LOG, offset, started)) from None
     else:
         await chat(direct_toolbox())
 
