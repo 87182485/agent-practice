@@ -1,0 +1,21 @@
+[
+  {"id": "q01", "user": "alice", "category": "paraphrase",
+   "query": "database query performance",
+   "relevant": ["pg-index-guide"]},
+  {"id": "q02", "user": "alice", "category": "lexical",
+    "query": "Use The Index", "relevant": ["pg-index-guide"]},
+  {"id": "q03", "user": "alice", "category": "lexical",
+    "query": "CSS Grid", "relevant": ["css-grid"]},
+  {"id": "q04", "user": "alice", "category": "paraphrase",
+    "query": "keep a pan from rusting", "relevant": ["cast-iron"]},
+  {"id": "q05", "user": "alice", "category": "distractor",
+    "query": "starter", "relevant": ["fastapi-template"]},
+  {"id": "q06", "user": "alice", "category": "paraphrase",
+ "query": "slow queries", "relevant": ["pg-index-guide"]},
+{"id": "q07", "user": "alice", "category": "paraphrase",
+ "query": "query plan", "relevant": ["explain-analyze"]},
+{"id": "q08", "user": "alice", "category": "paraphrase",
+ "query": "API keys", "relevant": ["secret-rotation"]},
+{"id": "q09", "user": "alice", "category": "paraphrase",
+ "query": "load faster", "relevant": ["web-vitals-lcp"]}
+]

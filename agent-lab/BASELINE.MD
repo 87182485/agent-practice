@@ -399,3 +399,51 @@ separate these; the harness just wasn't recording them.
     (Ollama reports nanoseconds; missing fields become None), tool calls requested.
   - `tool_call`: step, tool name, local or remote, argument NAMES only, ok, executed
     (False when a repeat call was blocked), seconds, result size,
+
+## 2026-11-06 — RAG step 1: retrieval eval harness + keyword baselines
+
+### What
+Retrieval-only eval (no model, no API): retrieval/corpus.json, retrieval/queries.json,
+recall_at_k, evaluate/summarize runner. Retrievers: B0 = keyword on title
+(in-process copy of list_bookmarks), B1 = keyword on title + notes.
+Matching: whole query string, case-insensitive substring. One search per query
+with limit = max(KS); KS = (1, 3, 5).
+
+### Data
+Corpus: 28 alice + 4 bob bookmarks (bob = near-duplicate titles, leak check).
+Queries: 9 so far — 2 lexical, 6 paraphrase (4 notes-only), 1 distractor.
+
+### Decisions
+- queries.json holds search phrases (what the model sends to the tool), not user
+  utterances. Utterances belong to step 3 agent evals.
+- Query.relevant loaded as frozenset at the loader boundary; recall_at_k takes Set[str].
+- Missing category in summary = absent, never 0.0.
+- q06 relevant = only the bookmark containing the literal phrase (not every
+  semantically related one). Apply the same standard to later queries.
+
+### Predictions (written before running)
+- Lexical controls: 1.00 for B0 and B1.
+- Notes-only queries (q06–q09): B0 0.00, B1 hits each one.
+- q05 "starter": distractor ranks first → recall@1 0, recall@3 1.
+
+### Results (9 queries)
+| retriever | lexical @1/3/5 | paraphrase @1/3/5 | distractor @1/3/5 |
+|---|---|---|---|
+| B0 | 1.00 / 1.00 / 1.00 | 0.00 / 0.00 / 0.00 | 0.00 / 1.00 / 1.00 |
+| B1 | 1.00 / 1.00 / 1.00 | 0.67 / 0.67 / 0.67 | 0.00 / 1.00 / 1.00 |
+
+All predictions held. Notes search alone lifts paraphrase recall 0.00 → 0.67,
+so embeddings must beat 0.67, not 0.00, to show semantic matching adds value.
+
+### Corrections
+- q01 was first written as a full sentence → 0.00 for every retriever was a
+  query-format artifact, not a measurement. Rewritten as "database query performance".
+- q02 "index" scored 1.00 only because pg-index-guide precedes index-funds in
+  the corpus (order luck). Changed to "Use The Index" (single match).
+
+### Not proven
+- _matches is NOT yet confirmed against the real list_bookmarks route.
+  Conformance test pending; distractor row is provisional until then.
+- Keyword results have no score: ranking = corpus insertion order. Corpus order
+  is fixed; reordering it can move keyword recall@1.
+- Small sample (9 queries): numbers are directional, not final.
