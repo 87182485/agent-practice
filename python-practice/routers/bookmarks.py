@@ -11,6 +11,8 @@ from models.bookmarks import Bookmark, BookmarkCreate, BookmarkList, BookmarkRea
 
 from errors import BookmarkNotFound
 
+from app.search import escape_like
+
 router = APIRouter(prefix="/bookmarks", dependencies=[Depends(get_current_user)])
 
 def get_or_create_tags(session: Session, names: list[str]) -> list[Tag]:
@@ -56,13 +58,13 @@ def list_bookmarks(
 ):
     # select() takes the MODEL (what to fetch) and builds a statement — it does
     # not touch the database. session.exec() is what actually runs it.
-    statement = select(Bookmark).where(Bookmark.user_id == user.id).options(selectinload(Bookmark.tags))  # Filter bookmarks by the current user
+    statement = select(Bookmark).where(Bookmark.user_id == user.id).options(selectinload(Bookmark.tags)).order_by(Bookmark.id)  # Filter bookmarks by the current user
     count_statement = select(func.count()).select_from(Bookmark).where(Bookmark.user_id == user.id)  # Count bookmarks for the current user
 
     if q is not None:
         # ilike = case-insensitive LIKE, done BY THE DATABASE.
         # `q` is passed as a parameter, not concatenated — not injectable.
-        condition = col(Bookmark.title).ilike(f"%{q}%")
+        condition = col(Bookmark.title).ilike(f"%{escape_like(q)}%", escape="\\")  # Escape special characters for LIKE
         statement = statement.where(condition)
         # The count must get the SAME filter, or `total` describes a different
         # set than `data`.
