@@ -17,5 +17,11 @@
 {"id": "q08", "user": "alice", "category": "paraphrase",
  "query": "API keys", "relevant": ["secret-rotation"]},
 {"id": "q09", "user": "alice", "category": "paraphrase",
- "query": "load faster", "relevant": ["web-vitals-lcp"]}
+ "query": "load faster", "relevant": ["web-vitals-lcp"]},
+ {"id": "q10", "user": "alice", "category": "paraphrase",
+ "query": "my bread culture", "relevant": ["sourdough-starter"]},
+{"id": "q11", "user": "alice", "category": "paraphrase",
+ "query": "retirement savings account", "relevant": ["roth-ira"]},
+{"id": "q12", "user": "alice", "category": "paraphrase",
+ "query": "damp cellar", "relevant": ["dehumidifier"]}
 ]
