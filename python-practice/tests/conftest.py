@@ -8,13 +8,15 @@ Closest Jest analogy: beforeEach + afterEach, but per-test and opt-in.
 """
 
 import pytest
+from app.vector_store import (
+    create_vec_table,
+    install_sqlite_vec,
+)
+from database import get_session
 from fastapi.testclient import TestClient
+from main import app
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
-
-from database import get_session
-from main import app
-
 
 
 @pytest.fixture(name="session")
@@ -30,8 +32,10 @@ def session_fixture():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+    install_sqlite_vec(engine)
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
+        create_vec_table(session, 768)
         yield session          # code after yield = teardown (like afterEach)
 
 

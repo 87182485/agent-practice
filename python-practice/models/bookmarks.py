@@ -32,6 +32,7 @@ class Bookmark(BookmarkBase, table=True):
     # once at import and give every row the same timestamp.
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     tags: list["Tag"] = Relationship(back_populates="bookmarks", link_model=BookmarkTagLink)
+    embedding_model: str | None = None
 
 class BookmarkCreate(BookmarkBase):
     url: HttpUrl

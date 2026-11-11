@@ -4,3 +4,4 @@
 pytest
 httpx2      # what Starlette 1.x's TestClient uses (falls back to httpx with a warning)
 httpx       # used by seed.py
+numpy       # test_vector_store's brute-force oracle
