@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from app.embeddings import EmbedderDep
+from app.embeddings import Embedder, EmbedderDep
 from app.vector_store import delete_vector
 from app.indexing import index_bookmark
 from app.search import escape_like
@@ -38,6 +38,10 @@ def get_owned_bookmark(bookmark_id: int, session: SessionDep, user: CurrentUserD
     return bookmark
 
 OwnedBookmarkDep = Annotated[Bookmark, Depends(get_owned_bookmark)]
+
+def needs_reindex(bookmark: Bookmark, before: tuple[str, str | None], embedder: Embedder) -> bool:
+    """Re-embed when the embedded text changed, or when the stored vector is missing or from another model."""
+    return (bookmark.title, bookmark.note) != before or bookmark.embedding_model != embedder.model
 
 @router.post("", response_model=BookmarkRead, status_code=status.HTTP_201_CREATED)
 def create_bookmark(payload: BookmarkCreate, session: SessionDep, user: CurrentUserDep, embedder: EmbedderDep):
@@ -99,8 +103,8 @@ def update_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkCreate, session
     bookmark.sqlmodel_update(data)   # replaces milestone 1's dict .update()
     bookmark.tags = get_or_create_tags(session, payload.tags)  # replace the tags with the new ones
     session.add(bookmark)
-    if (bookmark.title, bookmark.note) != before:
-        index_bookmark(session, embedder, bookmark)  # re-index if title or note changed
+    if needs_reindex(bookmark, before, embedder):
+        index_bookmark(session, embedder, bookmark)
     session.commit()
     session.refresh(bookmark)
     return bookmark
@@ -114,9 +118,8 @@ def patch_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkUpdate, session:
         data["url"] = str(data["url"])
     before = (bookmark.title, bookmark.note)
     bookmark.sqlmodel_update(data)
- # re-index if title or note changed
     session.add(bookmark)
-    if (bookmark.title, bookmark.note) != before or bookmark.embedding_model != embedder.model:
+    if needs_reindex(bookmark, before, embedder):
         index_bookmark(session, embedder, bookmark)
     session.commit()
     session.refresh(bookmark)

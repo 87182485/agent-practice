@@ -72,6 +72,16 @@ def test_unindexed_bookmark_heals_on_any_edit(client, auth_headers, session, fak
     assert stored(session, bid).embedding_model == fake_embedder.model
 
 
+def test_unindexed_bookmark_heals_on_put(client, auth_headers, session, fake_embedder):
+    h = auth_headers("alice")
+    fake_embedder.fail = True
+    bid = create(client, h)
+    fake_embedder.fail = False
+    r = client.put(f"/bookmarks/{bid}", json={**BODY, "url": "https://example.com/c"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert stored(session, bid).embedding_model == fake_embedder.model
+
+
 def test_delete_removes_vector(client, auth_headers, session, fake_embedder):
     h = auth_headers("alice")
     bid = create(client, h)
