@@ -1,17 +1,23 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
-from sqlmodel import Session, col, func, select
-
+from app.embeddings import EmbedderDep
+from app.vector_store import delete_vector
+from app.indexing import index_bookmark
+from app.search import escape_like
 from auth import CurrentUserDep, get_current_user
 from database import SessionDep
-from models.bookmarks import Bookmark, BookmarkCreate, BookmarkList, BookmarkRead, BookmarkUpdate, Tag
-
 from errors import BookmarkNotFound
-
-from app.search import escape_like
+from fastapi import APIRouter, Depends, Query, status
+from models.bookmarks import (
+    Bookmark,
+    BookmarkCreate,
+    BookmarkList,
+    BookmarkRead,
+    BookmarkUpdate,
+    Tag,
+)
+from sqlalchemy.orm import selectinload
+from sqlmodel import Session, col, func, select
 
 router = APIRouter(prefix="/bookmarks", dependencies=[Depends(get_current_user)])
 
@@ -34,7 +40,7 @@ def get_owned_bookmark(bookmark_id: int, session: SessionDep, user: CurrentUserD
 OwnedBookmarkDep = Annotated[Bookmark, Depends(get_owned_bookmark)]
 
 @router.post("", response_model=BookmarkRead, status_code=status.HTTP_201_CREATED)
-def create_bookmark(payload: BookmarkCreate, session: SessionDep, user: CurrentUserDep):
+def create_bookmark(payload: BookmarkCreate, session: SessionDep, user: CurrentUserDep, embedder: EmbedderDep):
     bookmark = Bookmark(
         title=payload.title,
         note=payload.note,
@@ -43,6 +49,8 @@ def create_bookmark(payload: BookmarkCreate, session: SessionDep, user: CurrentU
         tags=get_or_create_tags(session, payload.tags),
     )
     session.add(bookmark)
+    session.flush()  # Flush to get the bookmark ID for indexing
+    index_bookmark(session, embedder, bookmark)  # Index the bookmark after it has an ID
     session.commit()
     session.refresh(bookmark)
     return bookmark
@@ -84,31 +92,38 @@ def get_bookmark(bookmark: OwnedBookmarkDep):
     return bookmark
 
 @router.put("/{bookmark_id}", response_model=BookmarkRead)
-def update_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkCreate, session: SessionDep):
+def update_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkCreate, session: SessionDep, embedder: EmbedderDep):
     data = payload.model_dump(exclude={"tags"})
     data["url"] = str(data["url"])
+    before = (bookmark.title, bookmark.note)
     bookmark.sqlmodel_update(data)   # replaces milestone 1's dict .update()
     bookmark.tags = get_or_create_tags(session, payload.tags)  # replace the tags with the new ones
     session.add(bookmark)
+    if (bookmark.title, bookmark.note) != before:
+        index_bookmark(session, embedder, bookmark)  # re-index if title or note changed
     session.commit()
     session.refresh(bookmark)
     return bookmark
 
 
 @router.patch("/{bookmark_id}", response_model=BookmarkRead)
-def patch_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkUpdate, session: SessionDep):
+def patch_bookmark(bookmark: OwnedBookmarkDep, payload: BookmarkUpdate, session: SessionDep, embedder: EmbedderDep):
     # Same exclude_unset trick as milestone 1 — it carries over unchanged.
     data = payload.model_dump(exclude_unset=True)
     if "url" in data:
         data["url"] = str(data["url"])
+    before = (bookmark.title, bookmark.note)
     bookmark.sqlmodel_update(data)
-
+ # re-index if title or note changed
     session.add(bookmark)
+    if (bookmark.title, bookmark.note) != before or bookmark.embedding_model != embedder.model:
+        index_bookmark(session, embedder, bookmark)
     session.commit()
     session.refresh(bookmark)
     return bookmark
 
 @router.delete("/{bookmark_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_bookmark(bookmark: OwnedBookmarkDep, session: SessionDep):
+    delete_vector(session, bookmark.id)  # Remove the vector from the vector store
     session.delete(bookmark)
     session.commit()

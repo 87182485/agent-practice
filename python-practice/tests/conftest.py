@@ -7,7 +7,10 @@ the same idea: declare what you need by name, the framework builds it.
 Closest Jest analogy: beforeEach + afterEach, but per-test and opt-in.
 """
 
+import zlib
+
 import pytest
+from app.embeddings import EmbeddingError, get_embedder
 from app.vector_store import (
     create_vec_table,
     install_sqlite_vec,
@@ -18,6 +21,31 @@ from main import app
 from sqlmodel import Session, SQLModel, create_engine
 from sqlmodel.pool import StaticPool
 
+
+FAKE_DIMS = 768
+
+class FakeEmbedder:
+    """Mimics Embedder: records every call, returns unit vectors."""
+    model = "fake-model"
+
+    def __init__(self):
+        self.calls: list[list[tuple[str, str | None]]] = []
+        self.fail = False
+
+    def vector_for(self, title: str, note: str | None) -> list[float]:
+        v: list[float] = [0] * FAKE_DIMS       # explicit annotation; ints are accepted as floats here
+        v[zlib.crc32(f"{title}|{note}".encode()) % FAKE_DIMS] = 1.0
+        return v
+
+    def embed_documents(self, docs: list[tuple[str, str | None]]) -> list[list[float]]:
+        self.calls.append(list(docs))
+        if self.fail:
+            raise EmbeddingError("fake: embedding unavailable")
+        return [self.vector_for(title, note) for title, note in docs]
+
+@pytest.fixture(name="fake_embedder")
+def fake_embedder():
+    return FakeEmbedder()
 
 @pytest.fixture(name="session")
 def session_fixture():
@@ -40,7 +68,7 @@ def session_fixture():
 
 
 @pytest.fixture(name="client")
-def client_fixture(session: Session):
+def client_fixture(session: Session, fake_embedder):
     def get_session_override():
         try:
             yield session
@@ -50,6 +78,7 @@ def client_fixture(session: Session):
     # The payoff of Depends: swap the real database for the test one.
     # Every endpoint that asks for get_session now receives `session`.
     app.dependency_overrides[get_session] = get_session_override
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
 
     # Deliberately NOT `with TestClient(app)`: the context-manager form runs
     # your lifespan, which would create tables in the REAL bookmarks.db.

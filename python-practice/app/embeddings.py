@@ -3,9 +3,12 @@ import math
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from typing import Annotated
 
 import httpx
 import ollama
+from fastapi import Depends
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,11 @@ class Embedder:
             raise EmbeddingError(f"Vector has wrong dimensions: expected {self.config.dims}, got {len(v)}")
         if abs(math.sqrt(sum(x * x for x in v)) - 1.0) > NORM_TOLERANCE:
             raise EmbeddingError(f"Vector norm is not close to 1.0: {math.sqrt(sum(x * x for x in v))}")
+@lru_cache
+def get_embedder() -> Embedder:
+    return default_embedder()  # The embedder the API uses, chosen by the EMBED_MODEL env var
 
+EmbedderDep = Annotated[Embedder, Depends(get_embedder)]
 
 def default_embedder() -> Embedder:
     """The embedder the API uses, chosen by the EMBED_MODEL env var."""
